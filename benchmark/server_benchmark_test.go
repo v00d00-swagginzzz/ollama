@@ -37,7 +37,6 @@ type TestCase struct {
 	maxTokens int
 }
 
-// BenchmarkColdStart runs benchmarks with model loading from cold state
 // runGenerateBenchmark contains the common generate and metrics logic
 func runGenerateBenchmark(b *testing.B, ctx context.Context, client *api.Client, req *api.GenerateRequest) {
 	start := time.Now()
