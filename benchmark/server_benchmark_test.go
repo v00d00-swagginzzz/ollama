@@ -1,4 +1,3 @@
-// Package benchmark provides tools for performance testing of Ollama inference server and supported models.
 package benchmark
 
 import (
@@ -7,9 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"testing"
-	"text/tabwriter"
 	"time"
 
 	"github.com/ollama/ollama/api"
@@ -26,7 +23,7 @@ func init() {
 	flag.Lookup("m").DefValue = "model"
 }
 
-// getModel returns the model name from flags, failing the test if not set for benchmarks
+// getModel returns the model name from flags, failing the test if not set
 func getModel(b *testing.B) string {
 	if modelFlag == "" {
 		b.Fatal("Error: -m flag is required for benchmark tests")
@@ -34,28 +31,50 @@ func getModel(b *testing.B) string {
 	return modelFlag
 }
 
-// metrics collects all benchmark results for final reporting
-var metrics []BenchmarkMetrics
-
 type TestCase struct {
-	name      string // Human-readable test name
-	prompt    string // Input prompt text
-	maxTokens int    // Maximum tokens to generate
+	name      string
+	prompt    string
+	maxTokens int
 }
 
-// BenchmarkMetrics contains performance measurements for a single test run
-type BenchmarkMetrics struct {
-	model           string        // Model being tested
-	testName        string        // Name of the test case
-	ttft            time.Duration // Time To First Token (TTFT)
-	totalTime       time.Duration // Total time for complete response
-	totalTokens     int           // Total generated tokens
-	tokensPerSecond float64       // Calculated throughput
+// BenchmarkColdStart runs benchmarks with model loading from cold state
+// runGenerateBenchmark contains the common generate and metrics logic
+func runGenerateBenchmark(b *testing.B, ctx context.Context, client *api.Client, req *api.GenerateRequest) {
+	start := time.Now()
+	var ttft time.Duration
+	var metrics api.Metrics
+
+	err := client.Generate(ctx, req, func(resp api.GenerateResponse) error {
+		if ttft == 0 && resp.Response != "" {
+			ttft = time.Since(start)
+		}
+		if resp.Done {
+			metrics = resp.Metrics
+		}
+		return nil
+	})
+
+	// Report custom metrics as part of the benchmark results
+	b.ReportMetric(float64(ttft.Milliseconds()), "ttft_ms")
+	b.ReportMetric(float64(metrics.LoadDuration.Milliseconds()), "load_ms")
+
+	// Token throughput metrics
+	promptThroughput := float64(metrics.PromptEvalCount) / metrics.PromptEvalDuration.Seconds()
+	genThroughput := float64(metrics.EvalCount) / metrics.EvalDuration.Seconds()
+	b.ReportMetric(promptThroughput, "prompt_tok/s")
+	b.ReportMetric(genThroughput, "gen_tok/s")
+
+	// Token counts
+	b.ReportMetric(float64(metrics.PromptEvalCount), "prompt_tokens")
+	b.ReportMetric(float64(metrics.EvalCount), "gen_tokens")
+	if err != nil {
+		b.Fatal(err)
+	}
 }
 
 // BenchmarkColdStart runs benchmarks with model loading from cold state
 func BenchmarkColdStart(b *testing.B) {
-	client := setupBenchmark(b)
+	client := setup(b)
 	tests := []TestCase{
 		{"short_prompt", "Write a long story", 100},
 		{"medium_prompt", "Write a detailed economic analysis", 500},
@@ -64,27 +83,34 @@ func BenchmarkColdStart(b *testing.B) {
 	m := getModel(b)
 
 	for _, tt := range tests {
-		testName := fmt.Sprintf("%s/cold/%s", m, tt.name)
-		b.Run(testName, func(b *testing.B) {
-			results := make([]BenchmarkMetrics, b.N)
+		b.Run(fmt.Sprintf("%s/cold/%s", m, tt.name), func(b *testing.B) {
+			ctx := context.Background()
+
+			// Set number of tokens as our throughput metric
+			b.SetBytes(int64(tt.maxTokens))
 
 			b.ResetTimer()
-			for i := range b.N {
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
 				// Ensure model is unloaded before each iteration
-				unloadModel(client, m, b)
+				unload(client, m, b)
+				b.StartTimer()
 
-				results[i] = runSingleIteration(context.Background(), client, tt, m, b)
+				req := &api.GenerateRequest{
+					Model:   m,
+					Prompt:  tt.prompt,
+					Options: map[string]interface{}{"num_predict": tt.maxTokens, "temperature": 0.1},
+				}
+
+				runGenerateBenchmark(b, ctx, client, req)
 			}
-			metrics = append(metrics, results...)
 		})
 	}
-
-	b.Cleanup(func() { reportMetrics(metrics) })
 }
 
 // BenchmarkWarmStart runs benchmarks with pre-loaded model
 func BenchmarkWarmStart(b *testing.B) {
-	client := setupBenchmark(b)
+	client := setup(b)
 	tests := []TestCase{
 		{"short_prompt", "Write a long story", 100},
 		{"medium_prompt", "Write a detailed economic analysis", 500},
@@ -93,32 +119,36 @@ func BenchmarkWarmStart(b *testing.B) {
 	m := getModel(b)
 
 	for _, tt := range tests {
-		testName := fmt.Sprintf("%s/warm/%s", m, tt.name)
-		b.Run(testName, func(b *testing.B) {
-			results := make([]BenchmarkMetrics, b.N)
+		b.Run(fmt.Sprintf("%s/warm/%s", m, tt.name), func(b *testing.B) {
+			ctx := context.Background()
 
 			// Pre-warm the model
-			warmupModel(client, m, tt.prompt, b)
+			warmup(client, m, tt.prompt, b)
+
+			// Set number of tokens as our throughput metric
+			b.SetBytes(int64(tt.maxTokens))
 
 			b.ResetTimer()
-			for i := range b.N {
-				results[i] = runSingleIteration(context.Background(), client, tt, m, b)
+			for i := 0; i < b.N; i++ {
+				req := &api.GenerateRequest{
+					Model:   m,
+					Prompt:  tt.prompt,
+					Options: map[string]interface{}{"num_predict": tt.maxTokens, "temperature": 0.1},
+				}
+
+				runGenerateBenchmark(b, ctx, client, req)
 			}
-			metrics = append(metrics, results...)
 		})
 	}
-
-	b.Cleanup(func() { reportMetrics(metrics) })
 }
 
-// setupBenchmark verifies server and model availability
-func setupBenchmark(b *testing.B) *api.Client {
+// setup verifies server and model availability
+func setup(b *testing.B) *api.Client {
 	resp, err := http.Get(serverURL + "/api/version")
 	if err != nil {
 		b.Fatalf("Server unavailable: %v", err)
 	}
 	defer resp.Body.Close()
-	b.Log("Server available")
 
 	client := api.NewClient(mustParse(serverURL), http.DefaultClient)
 	if _, err := client.Show(context.Background(), &api.ShowRequest{Model: getModel(b)}); err != nil {
@@ -128,8 +158,8 @@ func setupBenchmark(b *testing.B) *api.Client {
 	return client
 }
 
-// warmupModel ensures the model is loaded and warmed up
-func warmupModel(client *api.Client, model string, prompt string, b *testing.B) {
+// warmup ensures the model is loaded and warmed up
+func warmup(client *api.Client, model string, prompt string, b *testing.B) {
 	for range 2 {
 		err := client.Generate(
 			context.Background(),
@@ -146,9 +176,8 @@ func warmupModel(client *api.Client, model string, prompt string, b *testing.B) 
 	}
 }
 
-// unloadModel forces model unloading using KeepAlive: 0 parameter.
-// Includes short delay to ensure unloading completes before next test.
-func unloadModel(client *api.Client, model string, b *testing.B) {
+// unload forces model unloading using KeepAlive: 0 parameter
+func unload(client *api.Client, model string, b *testing.B) {
 	req := &api.GenerateRequest{
 		Model:     model,
 		KeepAlive: &api.Duration{Duration: 0},
@@ -157,131 +186,6 @@ func unloadModel(client *api.Client, model string, b *testing.B) {
 		b.Logf("Unload error: %v", err)
 	}
 	time.Sleep(100 * time.Millisecond)
-}
-
-// runSingleIteration executes a single benchmark iteration
-func runSingleIteration(ctx context.Context, client *api.Client, tt TestCase, model string, b *testing.B) BenchmarkMetrics {
-	start := time.Now()
-	var ttft time.Duration
-	var tokens int
-	lastToken := start
-
-	req := &api.GenerateRequest{
-		Model:   model,
-		Prompt:  tt.prompt,
-		Options: map[string]interface{}{"num_predict": tt.maxTokens, "temperature": 0.1},
-	}
-
-	if b != nil {
-		b.Logf("Prompt length: %d chars", len(tt.prompt))
-	}
-
-	err := client.Generate(ctx, req, func(resp api.GenerateResponse) error {
-		if ttft == 0 {
-			ttft = time.Since(start)
-		}
-		if resp.Response != "" {
-			tokens++
-			lastToken = time.Now()
-		}
-		return nil
-	})
-	if err != nil {
-		b.Logf("Generation error: %v", err)
-	}
-
-	totalTime := lastToken.Sub(start)
-	return BenchmarkMetrics{
-		model:           model,
-		testName:        tt.name,
-		ttft:            ttft,
-		totalTime:       totalTime,
-		totalTokens:     tokens,
-		tokensPerSecond: float64(tokens) / totalTime.Seconds(),
-	}
-}
-
-// reportMetrics processes collected metrics and prints results
-func reportMetrics(results []BenchmarkMetrics) {
-	if len(results) == 0 {
-		return
-	}
-
-	type statsKey struct {
-		model    string
-		testName string
-	}
-	stats := make(map[statsKey]*struct {
-		ttftSum      time.Duration
-		totalTimeSum time.Duration
-		tokensSum    int
-		iterations   int
-	})
-
-	for _, m := range results {
-		key := statsKey{m.model, m.testName}
-		if _, exists := stats[key]; !exists {
-			stats[key] = &struct {
-				ttftSum      time.Duration
-				totalTimeSum time.Duration
-				tokensSum    int
-				iterations   int
-			}{}
-		}
-
-		stats[key].ttftSum += m.ttft
-		stats[key].totalTimeSum += m.totalTime
-		stats[key].tokensSum += m.totalTokens
-		stats[key].iterations++
-	}
-
-	var averaged []BenchmarkMetrics
-	for key, data := range stats {
-		count := data.iterations
-		averaged = append(averaged, BenchmarkMetrics{
-			model:           key.model,
-			testName:        key.testName,
-			ttft:            data.ttftSum / time.Duration(count),
-			totalTime:       data.totalTimeSum / time.Duration(count),
-			totalTokens:     data.tokensSum / count,
-			tokensPerSecond: float64(data.tokensSum) / data.totalTimeSum.Seconds(),
-		})
-	}
-
-	printTableResults(averaged)
-	printCSVResults(averaged)
-}
-
-func printTableResults(averaged []BenchmarkMetrics) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "\nAVERAGED BENCHMARK RESULTS")
-	fmt.Fprintln(w, "Model\tTest Name\tTTFT (ms)\tTotal Time (ms)\tTokens\tTokens/sec")
-	for _, m := range averaged {
-		fmt.Fprintf(w, "%s\t%s\t%.2f\t%.2f\t%d\t%.2f\n",
-			m.model,
-			m.testName,
-			float64(m.ttft.Milliseconds()),
-			float64(m.totalTime.Milliseconds()),
-			m.totalTokens,
-			m.tokensPerSecond,
-		)
-	}
-	w.Flush()
-}
-
-func printCSVResults(averaged []BenchmarkMetrics) {
-	fmt.Println("\nCSV OUTPUT")
-	fmt.Println("model,test_name,ttft_ms,total_ms,tokens,tokens_per_sec")
-	for _, m := range averaged {
-		fmt.Printf("%s,%s,%.2f,%.2f,%d,%.2f\n",
-			m.model,
-			m.testName,
-			float64(m.ttft.Milliseconds()),
-			float64(m.totalTime.Milliseconds()),
-			m.totalTokens,
-			m.tokensPerSecond,
-		)
-	}
 }
 
 func mustParse(rawURL string) *url.URL {
