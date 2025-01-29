@@ -19,11 +19,19 @@ import (
 const serverURL = "http://127.0.0.1:11434"
 
 // Command line flags
-var model string
+var modelFlag string
 
 func init() {
-	flag.StringVar(&model, "m", "", "Name of the model to benchmark (required)")
+	flag.StringVar(&modelFlag, "m", "", "Name of the model to benchmark")
 	flag.Lookup("m").DefValue = "model"
+}
+
+// getModel returns the model name from flags, failing the test if not set for benchmarks
+func getModel(b *testing.B) string {
+	if modelFlag == "" {
+		b.Fatal("Error: -m flag is required for benchmark tests")
+	}
+	return modelFlag
 }
 
 // metrics collects all benchmark results for final reporting
@@ -45,15 +53,6 @@ type BenchmarkMetrics struct {
 	tokensPerSecond float64       // Calculated throughput
 }
 
-func TestMain(m *testing.M) {
-	flag.Parse()
-	if model == "" {
-		fmt.Fprintln(os.Stderr, "Error: -model flag is required")
-		os.Exit(1)
-	}
-	os.Exit(m.Run())
-}
-
 // BenchmarkColdStart runs benchmarks with model loading from cold state
 func BenchmarkColdStart(b *testing.B) {
 	client := setupBenchmark(b)
@@ -62,18 +61,19 @@ func BenchmarkColdStart(b *testing.B) {
 		{"medium_prompt", "Write a detailed economic analysis", 500},
 		{"long_prompt", "Write a comprehensive AI research paper", 1000},
 	}
+	m := getModel(b)
 
 	for _, tt := range tests {
-		testName := fmt.Sprintf("%s/cold/%s", model, tt.name)
+		testName := fmt.Sprintf("%s/cold/%s", m, tt.name)
 		b.Run(testName, func(b *testing.B) {
 			results := make([]BenchmarkMetrics, b.N)
 
 			b.ResetTimer()
 			for i := range b.N {
 				// Ensure model is unloaded before each iteration
-				unloadModel(client, model, b)
+				unloadModel(client, m, b)
 
-				results[i] = runSingleIteration(context.Background(), client, tt, model, b)
+				results[i] = runSingleIteration(context.Background(), client, tt, m, b)
 			}
 			metrics = append(metrics, results...)
 		})
@@ -90,18 +90,19 @@ func BenchmarkWarmStart(b *testing.B) {
 		{"medium_prompt", "Write a detailed economic analysis", 500},
 		{"long_prompt", "Write a comprehensive AI research paper", 1000},
 	}
+	m := getModel(b)
 
 	for _, tt := range tests {
-		testName := fmt.Sprintf("%s/warm/%s", model, tt.name)
+		testName := fmt.Sprintf("%s/warm/%s", m, tt.name)
 		b.Run(testName, func(b *testing.B) {
 			results := make([]BenchmarkMetrics, b.N)
 
 			// Pre-warm the model
-			warmupModel(client, model, tt.prompt, b)
+			warmupModel(client, m, tt.prompt, b)
 
 			b.ResetTimer()
 			for i := range b.N {
-				results[i] = runSingleIteration(context.Background(), client, tt, model, b)
+				results[i] = runSingleIteration(context.Background(), client, tt, m, b)
 			}
 			metrics = append(metrics, results...)
 		})
@@ -120,7 +121,7 @@ func setupBenchmark(b *testing.B) *api.Client {
 	b.Log("Server available")
 
 	client := api.NewClient(mustParse(serverURL), http.DefaultClient)
-	if _, err := client.Show(context.Background(), &api.ShowRequest{Model: model}); err != nil {
+	if _, err := client.Show(context.Background(), &api.ShowRequest{Model: getModel(b)}); err != nil {
 		b.Fatalf("Model unavailable: %v", err)
 	}
 
