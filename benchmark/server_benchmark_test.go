@@ -89,7 +89,7 @@ func BenchmarkColdStart(b *testing.B) {
 			b.SetBytes(int64(tt.maxTokens))
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				b.StopTimer()
 				// Ensure model is unloaded before each iteration
 				unload(client, m, b)
@@ -128,7 +128,7 @@ func BenchmarkWarmStart(b *testing.B) {
 			b.SetBytes(int64(tt.maxTokens))
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				req := &api.GenerateRequest{
 					Model:   m,
 					Prompt:  tt.prompt,
