@@ -19,17 +19,16 @@ import (
 const serverURL = "http://127.0.0.1:11434"
 
 // Command line flags
-var modelFlag string
+var model string
 
 func init() {
-	flag.StringVar(&modelFlag, "m", "", "Name of the model to benchmark (required)")
-	flag.Lookup("m").DefValue = "model" // Set the default value for usage display
+	flag.StringVar(&model, "m", "", "Name of the model to benchmark (required)")
+	flag.Lookup("m").DefValue = "model"
 }
 
 // metrics collects all benchmark results for final reporting
 var metrics []BenchmarkMetrics
 
-// TestCase defines a benchmark test scenario with prompt characteristics
 type TestCase struct {
 	name      string // Human-readable test name
 	prompt    string // Input prompt text
@@ -39,7 +38,6 @@ type TestCase struct {
 // BenchmarkMetrics contains performance measurements for a single test run
 type BenchmarkMetrics struct {
 	model           string        // Model being tested
-	scenario        string        // cold_start or warm_start
 	testName        string        // Name of the test case
 	ttft            time.Duration // Time To First Token (TTFT)
 	totalTime       time.Duration // Total time for complete response
@@ -47,34 +45,73 @@ type BenchmarkMetrics struct {
 	tokensPerSecond float64       // Calculated throughput
 }
 
-// ScenarioType defines the initialization state for benchmarking
-type ScenarioType int
-
-const (
-	ColdStart ScenarioType = iota // Model is loaded from cold state
-	WarmStart                     // Model is already loaded in memory
-)
-
-// String implements fmt.Stringer for ScenarioType
-func (s ScenarioType) String() string {
-	return [...]string{"cold_start", "warm_start"}[s]
-}
-
 func TestMain(m *testing.M) {
 	flag.Parse()
-	if modelFlag == "" {
+	if model == "" {
 		fmt.Fprintln(os.Stderr, "Error: -model flag is required")
 		os.Exit(1)
 	}
 	os.Exit(m.Run())
 }
 
-// BenchmarkServerInference is the main entry point for benchmarking Ollama inference performance.
-// It uses the model specified by the -model flag.
-func BenchmarkServerInference(b *testing.B) {
-	b.Logf("Starting benchmark suite for model: %s", modelFlag)
+// BenchmarkColdStart runs benchmarks with model loading from cold state
+func BenchmarkColdStart(b *testing.B) {
+	client := setupBenchmark(b)
+	tests := []TestCase{
+		{"short_prompt", "Write a long story", 100},
+		{"medium_prompt", "Write a detailed economic analysis", 500},
+		{"long_prompt", "Write a comprehensive AI research paper", 1000},
+	}
 
-	// Verify server availability
+	for _, tt := range tests {
+		testName := fmt.Sprintf("%s/cold/%s", model, tt.name)
+		b.Run(testName, func(b *testing.B) {
+			results := make([]BenchmarkMetrics, b.N)
+
+			b.ResetTimer()
+			for i := range b.N {
+				// Ensure model is unloaded before each iteration
+				unloadModel(client, model, b)
+
+				results[i] = runSingleIteration(context.Background(), client, tt, model, b)
+			}
+			metrics = append(metrics, results...)
+		})
+	}
+
+	b.Cleanup(func() { reportMetrics(metrics) })
+}
+
+// BenchmarkWarmStart runs benchmarks with pre-loaded model
+func BenchmarkWarmStart(b *testing.B) {
+	client := setupBenchmark(b)
+	tests := []TestCase{
+		{"short_prompt", "Write a long story", 100},
+		{"medium_prompt", "Write a detailed economic analysis", 500},
+		{"long_prompt", "Write a comprehensive AI research paper", 1000},
+	}
+
+	for _, tt := range tests {
+		testName := fmt.Sprintf("%s/warm/%s", model, tt.name)
+		b.Run(testName, func(b *testing.B) {
+			results := make([]BenchmarkMetrics, b.N)
+
+			// Pre-warm the model
+			warmupModel(client, model, tt.prompt, b)
+
+			b.ResetTimer()
+			for i := range b.N {
+				results[i] = runSingleIteration(context.Background(), client, tt, model, b)
+			}
+			metrics = append(metrics, results...)
+		})
+	}
+
+	b.Cleanup(func() { reportMetrics(metrics) })
+}
+
+// setupBenchmark verifies server and model availability
+func setupBenchmark(b *testing.B) *api.Client {
 	resp, err := http.Get(serverURL + "/api/version")
 	if err != nil {
 		b.Fatalf("Server unavailable: %v", err)
@@ -82,76 +119,33 @@ func BenchmarkServerInference(b *testing.B) {
 	defer resp.Body.Close()
 	b.Log("Server available")
 
-	tests := []TestCase{
-		{"short_prompt", "Write a long story", 100},
-		{"medium_prompt", "Write a detailed economic analysis", 500},
-		{"long_prompt", "Write a comprehensive AI research paper", 1000},
-	}
-
-	// Register cleanup handler for results reporting
-	b.Cleanup(func() { reportMetrics(metrics) })
-
 	client := api.NewClient(mustParse(serverURL), http.DefaultClient)
-	// Verify model availability
-	if _, err := client.Show(context.Background(), &api.ShowRequest{Model: modelFlag}); err != nil {
+	if _, err := client.Show(context.Background(), &api.ShowRequest{Model: model}); err != nil {
 		b.Fatalf("Model unavailable: %v", err)
 	}
 
-	for _, tt := range tests {
-		testName := fmt.Sprintf("%s/%s/%s", modelFlag, ColdStart, tt.name)
-		b.Run(testName, func(b *testing.B) {
-			m := runBenchmark(b, tt, modelFlag, ColdStart, client)
-			metrics = append(metrics, m...)
-		})
-	}
+	return client
+}
 
-	for _, tt := range tests {
-		testName := fmt.Sprintf("%s/%s/%s", modelFlag, WarmStart, tt.name)
-		b.Run(testName, func(b *testing.B) {
-			m := runBenchmark(b, tt, modelFlag, WarmStart, client)
-			metrics = append(metrics, m...)
-		})
+// warmupModel ensures the model is loaded and warmed up
+func warmupModel(client *api.Client, model string, prompt string, b *testing.B) {
+	for range 2 {
+		err := client.Generate(
+			context.Background(),
+			&api.GenerateRequest{
+				Model:   model,
+				Prompt:  prompt,
+				Options: map[string]interface{}{"num_predict": 50, "temperature": 0.1},
+			},
+			func(api.GenerateResponse) error { return nil },
+		)
+		if err != nil {
+			b.Logf("Error during model warm-up: %v", err)
+		}
 	}
 }
 
-// runBenchmark executes multiple iterations of a specific test case and scenario.
-// Returns collected metrics for all iterations.
-func runBenchmark(b *testing.B, tt TestCase, model string, scenario ScenarioType, client *api.Client) []BenchmarkMetrics {
-	results := make([]BenchmarkMetrics, b.N)
-
-	if scenario == WarmStart {
-		// Pre-warm the model by generating some tokens
-		for range 2 {
-			err := client.Generate(
-				context.Background(),
-				&api.GenerateRequest{
-					Model:   model,
-					Prompt:  tt.prompt,
-					Options: map[string]interface{}{"num_predict": 50, "temperature": 0.1},
-				},
-				func(api.GenerateResponse) error { return nil },
-			)
-			if err != nil {
-				b.Logf("Error during model warm-up: %v", err)
-			}
-		}
-	}
-
-	b.ResetTimer()
-
-	// Run benchmark iterations
-	for i := range b.N {
-		if scenario == ColdStart {
-			unloadModel(client, model, b)
-		}
-
-		results[i] = runSingleIteration(context.Background(), client, tt, model, b)
-		results[i].scenario = scenario.String()
-	}
-	return results
-}
-
-// unloadModel forces model unloading using KeepAlive: -1 parameter.
+// unloadModel forces model unloading using KeepAlive: 0 parameter.
 // Includes short delay to ensure unloading completes before next test.
 func unloadModel(client *api.Client, model string, b *testing.B) {
 	req := &api.GenerateRequest{
@@ -164,8 +158,7 @@ func unloadModel(client *api.Client, model string, b *testing.B) {
 	time.Sleep(100 * time.Millisecond)
 }
 
-// runSingleIteration measures performance metrics for a single inference request.
-// Captures TTFT, total generation time, and calculates tokens/second.
+// runSingleIteration executes a single benchmark iteration
 func runSingleIteration(ctx context.Context, client *api.Client, tt TestCase, model string, b *testing.B) BenchmarkMetrics {
 	start := time.Now()
 	var ttft time.Duration
@@ -182,7 +175,6 @@ func runSingleIteration(ctx context.Context, client *api.Client, tt TestCase, mo
 		b.Logf("Prompt length: %d chars", len(tt.prompt))
 	}
 
-	// Execute generation request with metrics collection
 	err := client.Generate(ctx, req, func(resp api.GenerateResponse) error {
 		if ttft == 0 {
 			ttft = time.Since(start)
@@ -208,17 +200,14 @@ func runSingleIteration(ctx context.Context, client *api.Client, tt TestCase, mo
 	}
 }
 
-// reportMetrics processes collected metrics and prints formatted results.
-// Generates both human-readable tables and CSV output with averaged statistics.
+// reportMetrics processes collected metrics and prints results
 func reportMetrics(results []BenchmarkMetrics) {
 	if len(results) == 0 {
 		return
 	}
 
-	// Aggregate results by test case
 	type statsKey struct {
 		model    string
-		scenario string
 		testName string
 	}
 	stats := make(map[statsKey]*struct {
@@ -229,7 +218,7 @@ func reportMetrics(results []BenchmarkMetrics) {
 	})
 
 	for _, m := range results {
-		key := statsKey{m.model, m.scenario, m.testName}
+		key := statsKey{m.model, m.testName}
 		if _, exists := stats[key]; !exists {
 			stats[key] = &struct {
 				ttftSum      time.Duration
@@ -245,13 +234,11 @@ func reportMetrics(results []BenchmarkMetrics) {
 		stats[key].iterations++
 	}
 
-	// Calculate averages
 	var averaged []BenchmarkMetrics
 	for key, data := range stats {
 		count := data.iterations
 		averaged = append(averaged, BenchmarkMetrics{
 			model:           key.model,
-			scenario:        key.scenario,
 			testName:        key.testName,
 			ttft:            data.ttftSum / time.Duration(count),
 			totalTime:       data.totalTimeSum / time.Duration(count),
@@ -260,20 +247,17 @@ func reportMetrics(results []BenchmarkMetrics) {
 		})
 	}
 
-	// Print formatted results
 	printTableResults(averaged)
 	printCSVResults(averaged)
 }
 
-// printTableResults displays averaged metrics in a formatted table
 func printTableResults(averaged []BenchmarkMetrics) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "\nAVERAGED BENCHMARK RESULTS")
-	fmt.Fprintln(w, "Model\tScenario\tTest Name\tTTFT (ms)\tTotal Time (ms)\tTokens\tTokens/sec")
+	fmt.Fprintln(w, "Model\tTest Name\tTTFT (ms)\tTotal Time (ms)\tTokens\tTokens/sec")
 	for _, m := range averaged {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%.2f\t%.2f\t%d\t%.2f\n",
+		fmt.Fprintf(w, "%s\t%s\t%.2f\t%.2f\t%d\t%.2f\n",
 			m.model,
-			m.scenario,
 			m.testName,
 			float64(m.ttft.Milliseconds()),
 			float64(m.totalTime.Milliseconds()),
@@ -284,14 +268,12 @@ func printTableResults(averaged []BenchmarkMetrics) {
 	w.Flush()
 }
 
-// printCSVResults outputs averaged metrics in CSV format
 func printCSVResults(averaged []BenchmarkMetrics) {
 	fmt.Println("\nCSV OUTPUT")
-	fmt.Println("model,scenario,test_name,ttft_ms,total_ms,tokens,tokens_per_sec")
+	fmt.Println("model,test_name,ttft_ms,total_ms,tokens,tokens_per_sec")
 	for _, m := range averaged {
-		fmt.Printf("%s,%s,%s,%.2f,%.2f,%d,%.2f\n",
+		fmt.Printf("%s,%s,%.2f,%.2f,%d,%.2f\n",
 			m.model,
-			m.scenario,
 			m.testName,
 			float64(m.ttft.Milliseconds()),
 			float64(m.totalTime.Milliseconds()),
@@ -301,7 +283,6 @@ func printCSVResults(averaged []BenchmarkMetrics) {
 	}
 }
 
-// mustParse is a helper function to parse URLs with panic on error
 func mustParse(rawURL string) *url.URL {
 	u, err := url.Parse(rawURL)
 	if err != nil {
