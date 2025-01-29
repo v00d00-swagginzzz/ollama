@@ -3,6 +3,7 @@ package benchmark
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -17,15 +18,16 @@ import (
 // ServerURL is the default Ollama server URL for benchmarking
 const serverURL = "http://127.0.0.1:11434"
 
+// Command line flags
+var modelFlag string
+
+func init() {
+	flag.StringVar(&modelFlag, "m", "", "Name of the model to benchmark (required)")
+	flag.Lookup("m").DefValue = "model" // Set the default value for usage display
+}
+
 // metrics collects all benchmark results for final reporting
 var metrics []BenchmarkMetrics
-
-// models contains the list of model names to benchmark
-var models = []string{
-	"llama3.2:1b",
-	"llama3.1:8b",
-	"llama3.3:70b",
-}
 
 // TestCase defines a benchmark test scenario with prompt characteristics
 type TestCase struct {
@@ -58,10 +60,19 @@ func (s ScenarioType) String() string {
 	return [...]string{"cold_start", "warm_start"}[s]
 }
 
+func TestMain(m *testing.M) {
+	flag.Parse()
+	if modelFlag == "" {
+		fmt.Fprintln(os.Stderr, "Error: -model flag is required")
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
+
 // BenchmarkServerInference is the main entry point for benchmarking Ollama inference performance.
-// It tests all configured models with different prompt lengths and start scenarios.
+// It uses the model specified by the -model flag.
 func BenchmarkServerInference(b *testing.B) {
-	b.Logf("Starting benchmark suite with %d models", len(models))
+	b.Logf("Starting benchmark suite for model: %s", modelFlag)
 
 	// Verify server availability
 	resp, err := http.Get(serverURL + "/api/version")
@@ -80,29 +91,26 @@ func BenchmarkServerInference(b *testing.B) {
 	// Register cleanup handler for results reporting
 	b.Cleanup(func() { reportMetrics(metrics) })
 
-	// Main benchmark loop
-	for _, model := range models {
-		client := api.NewClient(mustParse(serverURL), http.DefaultClient)
-		// Verify model availability
-		if _, err := client.Show(context.Background(), &api.ShowRequest{Model: model}); err != nil {
-			b.Fatalf("Model unavailable: %v", err)
-		}
+	client := api.NewClient(mustParse(serverURL), http.DefaultClient)
+	// Verify model availability
+	if _, err := client.Show(context.Background(), &api.ShowRequest{Model: modelFlag}); err != nil {
+		b.Fatalf("Model unavailable: %v", err)
+	}
 
-		for _, tt := range tests {
-			testName := fmt.Sprintf("%s/%s/%s", model, ColdStart, tt.name)
-			b.Run(testName, func(b *testing.B) {
-				m := runBenchmark(b, tt, model, ColdStart, client)
-				metrics = append(metrics, m...)
-			})
-		}
+	for _, tt := range tests {
+		testName := fmt.Sprintf("%s/%s/%s", modelFlag, ColdStart, tt.name)
+		b.Run(testName, func(b *testing.B) {
+			m := runBenchmark(b, tt, modelFlag, ColdStart, client)
+			metrics = append(metrics, m...)
+		})
+	}
 
-		for _, tt := range tests {
-			testName := fmt.Sprintf("%s/%s/%s", model, WarmStart, tt.name)
-			b.Run(testName, func(b *testing.B) {
-				m := runBenchmark(b, tt, model, WarmStart, client)
-				metrics = append(metrics, m...)
-			})
-		}
+	for _, tt := range tests {
+		testName := fmt.Sprintf("%s/%s/%s", modelFlag, WarmStart, tt.name)
+		b.Run(testName, func(b *testing.B) {
+			m := runBenchmark(b, tt, modelFlag, WarmStart, client)
+			metrics = append(metrics, m...)
+		})
 	}
 }
 
