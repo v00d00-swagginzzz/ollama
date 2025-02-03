@@ -159,7 +159,7 @@ func setup(b *testing.B) *api.Client {
 
 // warmup ensures the model is loaded and warmed up
 func warmup(client *api.Client, model string, prompt string, b *testing.B) {
-	for range 2 {
+	for range 3 {
 		err := client.Generate(
 			context.Background(),
 			&api.GenerateRequest{
@@ -184,7 +184,7 @@ func unload(client *api.Client, model string, b *testing.B) {
 	if err := client.Generate(context.Background(), req, func(api.GenerateResponse) error { return nil }); err != nil {
 		b.Logf("Unload error: %v", err)
 	}
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 }
 
 func mustParse(rawURL string) *url.URL {

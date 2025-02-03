@@ -9,10 +9,10 @@ Performance benchmarking for Ollama.
 ## Run Benchmark
 ```bash
 # Run benchmark and save results
-go test -bench=. -m $MODEL_NAME ./... > bench1.txt
+go test -bench=. -count 10 -m $MODEL_NAME ./... > bench1.txt
 
 # Run again to compare (e.g. with different model or after code changes)
-go test -bench=. -m $MODEL_NAME ./... > bench2.txt
+go test -bench=. -count 10 -m $MODEL_NAME ./... > bench2.txt
 
 # Compare results
 benchstat bench1.txt bench2.txt
