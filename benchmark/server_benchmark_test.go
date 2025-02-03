@@ -4,16 +4,11 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"net/http"
-	"net/url"
 	"testing"
 	"time"
 
 	"github.com/ollama/ollama/api"
 )
-
-// ServerURL is the default Ollama server URL for benchmarking
-const serverURL = "http://127.0.0.1:11434"
 
 // Command line flags
 var modelFlag string
@@ -143,13 +138,10 @@ func BenchmarkWarmStart(b *testing.B) {
 
 // setup verifies server and model availability
 func setup(b *testing.B) *api.Client {
-	resp, err := http.Get(serverURL + "/api/version")
+	client, err := api.ClientFromEnvironment()
 	if err != nil {
-		b.Fatalf("Server unavailable: %v", err)
+		b.Fatal(err)
 	}
-	defer resp.Body.Close()
-
-	client := api.NewClient(mustParse(serverURL), http.DefaultClient)
 	if _, err := client.Show(context.Background(), &api.ShowRequest{Model: getModel(b)}); err != nil {
 		b.Fatalf("Model unavailable: %v", err)
 	}
@@ -185,12 +177,4 @@ func unload(client *api.Client, model string, b *testing.B) {
 		b.Logf("Unload error: %v", err)
 	}
 	time.Sleep(1 * time.Second)
-}
-
-func mustParse(rawURL string) *url.URL {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		panic(err)
-	}
-	return u
 }
