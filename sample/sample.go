@@ -6,6 +6,7 @@ import (
 	"math"
 	"slices"
 
+	"golang.org/x/exp/rand"
 	"gonum.org/v1/gonum/floats"
 	"gonum.org/v1/gonum/stat/sampleuv"
 )
@@ -18,17 +19,30 @@ type Sampler interface {
 	Sample([]float64) (int, error)
 }
 
-type SamplerConfig struct {
+type SamplerChain struct {
 	transforms []Transform
 	sampler    Sampler
 }
 
-// NewSampler creates a sampler with the given transforms and sampling method
-func NewSampler(transforms []Transform, sampler Sampler) *SamplerConfig {
-	return &SamplerConfig{
+func NewSampler(transforms []Transform, sampler Sampler) *SamplerChain {
+	return &SamplerChain{
 		transforms: transforms,
 		sampler:    sampler,
 	}
+}
+
+// TODO(parthsareen): potentially cache softmax values
+func softmax(logits []float64) []float64 {
+	copiedLogits := make([]float64, len(logits))
+	copy(copiedLogits, logits)
+	for i := range copiedLogits {
+		copiedLogits[i] = math.Exp(copiedLogits[i])
+	}
+
+	floatSum := floats.Sum(copiedLogits)
+	floats.Scale(1.0/floatSum, copiedLogits)
+
+	return copiedLogits
 }
 
 type Temperature float64
@@ -49,32 +63,9 @@ func (t Temperature) Apply(logits []float64) ([]float64, error) {
 	return logits, nil
 }
 
-type softmax struct{}
-
-func Softmax() Transform {
-	return softmax{}
-}
-
-func (softmax) Apply(logits []float64) ([]float64, error) {
-	return computeSoftmax(logits), nil
-}
-
-// TODO: cache softmax values
-func computeSoftmax(logits []float64) []float64 {
-	copiedLogits := make([]float64, len(logits))
-	copy(copiedLogits, logits)
-	for i := range copiedLogits {
-		copiedLogits[i] = math.Exp(copiedLogits[i])
-	}
-
-	floatSum := floats.Sum(copiedLogits)
-	floats.Scale(1.0/floatSum, copiedLogits)
-
-	return copiedLogits
-}
-
 type TopK int
 
+// TODO(parthsareen): avoid having to check all logits after this transform
 func (k TopK) Apply(logits []float64) ([]float64, error) {
 	if k <= 0 {
 		return nil, errors.New("k must be positive")
@@ -107,7 +98,7 @@ func (p TopP) Apply(logits []float64) ([]float64, error) {
 		return nil, errors.New("p must be between 0 and 1")
 	}
 
-	probs := computeSoftmax(logits)
+	probs := softmax(logits)
 
 	indices := make([]int, len(probs))
 	for i := range indices {
@@ -139,7 +130,7 @@ func (p MinP) Apply(logits []float64) ([]float64, error) {
 		return nil, errors.New("p must be between 0 and 1")
 	}
 
-	probs := computeSoftmax(logits)
+	probs := softmax(logits)
 	copiedProbs := make([]float64, len(probs))
 	copy(copiedProbs, probs)
 
@@ -157,13 +148,18 @@ func (p MinP) Apply(logits []float64) ([]float64, error) {
 	return logits, nil
 }
 
-type weighed struct{}
-
-func Weighed() Sampler {
-	return weighed{}
+type weighed struct {
+	src rand.Source
 }
 
-// should return single value
+func Weighed(seed ...int64) Sampler {
+	var src rand.Source
+	if len(seed) > 0 {
+		src = rand.NewSource(uint64(seed[0]))
+	}
+	return weighed{src: src}
+}
+
 func (s weighed) Sample(logits []float64) (int, error) {
 	logitsCopy := make([]float64, 0, len(logits))
 	indices := make([]int, 0, len(logits))
@@ -176,20 +172,18 @@ func (s weighed) Sample(logits []float64) (int, error) {
 	}
 
 	if len(logitsCopy) == 0 {
-		return -1, errors.New("no valid tokens found")
+		return -1, errors.New("no valid logits found for weighed sampling")
 	}
 
-	softmax := computeSoftmax(logitsCopy)
-	w := sampleuv.NewWeighted(softmax, nil)
+	probs := softmax(logitsCopy)
+	w := sampleuv.NewWeighted(probs, s.src)
 	if idx, ok := w.Take(); ok {
-		// returns the token ID
 		return indices[idx], nil
 	}
-	return -1, errors.New("weighed sampler failed")
+	return -1, errors.New("weighed sampler failed, no valid token found")
 }
 
-// Sample applies transforms and samples a token ID
-func (s *SamplerConfig) Sample(input []float32) (int, error) {
+func (s *SamplerChain) Sample(input []float32) (int, error) {
 	logits := make([]float64, len(input))
 	for i, v := range input {
 		logits[i] = float64(v)
@@ -198,14 +192,12 @@ func (s *SamplerConfig) Sample(input []float32) (int, error) {
 	var err error
 	for _, t := range s.transforms {
 		if t == Temperature(0) {
-			// early return with greedy if temperature is 0
 			s.sampler = Greedy()
-			break
-		}
-
-		logits, err = t.Apply(logits)
-		if err != nil {
-			return -1, err
+		} else {
+			logits, err = t.Apply(logits)
+			if err != nil {
+				return -1, err
+			}
 		}
 	}
 

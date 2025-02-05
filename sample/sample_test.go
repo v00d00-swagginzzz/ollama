@@ -28,10 +28,7 @@ func TestTemperature(t *testing.T) {
 }
 
 func TestSoftmax(t *testing.T) {
-	probs, err := Softmax().Apply([]float64{-3, -2, -1, 0, 1, 2, 4})
-	if err != nil {
-		t.Fatal(err)
-	}
+	probs := softmax([]float64{-3, -2, -1, 0, 1, 2, 4})
 
 	expectedProbs := []float64{0.000751406628089903, 0.0020425349829204676, 0.005552185728064613, 0.015092405572827691, 0.04102541181635154, 0.11151863144543739, 0.8240174238263085}
 	if !floats.Equal(probs, expectedProbs) {
@@ -175,7 +172,7 @@ func (ts *testTransform) Apply(logits []float64) ([]float64, error) {
 }
 
 func TestSampleTemperatureZero(t *testing.T) {
-	sampler := NewSampler([]Transform{Temperature(0)}, Greedy())
+	sampler := NewSampler([]Transform{Temperature(0)}, Weighed())
 	got, err := sampler.Sample([]float32{1, 2, 3, 4})
 	if err != nil {
 		t.Fatal(err)
