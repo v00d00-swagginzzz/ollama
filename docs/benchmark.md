@@ -17,7 +17,8 @@ Run these benchmarks when:
 
 ## Usage and Examples
 
-**Note**: All commands must be run from the `benchmark` directory of the Ollama project.
+>[!NOTE]
+>All commands must be run from the `benchmark` directory of the Ollama project.
 
 Basic syntax:
 ```bash
