@@ -51,11 +51,10 @@ func (t Temperature) Apply(logits []float64) ([]float64, error) {
 	if t < 0 || t > 2 {
 		return nil, errors.New("temperature must be between 0 and 2")
 	}
+	temp := math.Max(float64(t), 1e-7)
 
 	// subtracting max logit to avoid under/overflow
-	maxLogit := floats.Max(logits)
-
-	temp := math.Max(float64(t), 1e-7)
+	maxLogit := slices.Max(logits)
 	for i := range logits {
 		logits[i] = (logits[i] - maxLogit) / temp
 	}
@@ -68,7 +67,7 @@ type TopK int
 // TODO(parthsareen): avoid having to check all logits after this transform
 func (k TopK) Apply(logits []float64) ([]float64, error) {
 	if k <= 0 {
-		return nil, errors.New("k must be positive")
+		return nil, errors.New("k must be greater than 0")
 	}
 	if int(k) >= len(logits) {
 		return logits, nil
@@ -99,7 +98,6 @@ func (p TopP) Apply(logits []float64) ([]float64, error) {
 	}
 
 	probs := softmax(logits)
-
 	indices := make([]int, len(probs))
 	for i := range indices {
 		indices[i] = i
@@ -131,16 +129,10 @@ func (p MinP) Apply(logits []float64) ([]float64, error) {
 	}
 
 	probs := softmax(logits)
-	copiedProbs := make([]float64, len(probs))
-	copy(copiedProbs, probs)
+	threshold := slices.Max(probs) * float64(p)
 
-	slices.Sort(copiedProbs)
-
-	maxProb := copiedProbs[len(copiedProbs)-1]
-	probThreshold := float64(p) * maxProb
-
-	for i := range probs {
-		if probs[i] < probThreshold {
+	for i, prob := range probs {
+		if prob < threshold {
 			logits[i] = math.Inf(-1)
 		}
 	}
@@ -148,22 +140,21 @@ func (p MinP) Apply(logits []float64) ([]float64, error) {
 	return logits, nil
 }
 
-type weighed struct {
+type weighted struct {
 	src rand.Source
 }
 
-func Weighed(seed ...int64) Sampler {
+func Weighted(seed *int64) Sampler {
 	var src rand.Source
-	if len(seed) > 0 {
-		src = rand.NewSource(uint64(seed[0]))
+	if seed != nil {
+		src = rand.NewSource(uint64(*seed))
 	}
-	return weighed{src: src}
+	return weighted{src: src}
 }
 
-func (s weighed) Sample(logits []float64) (int, error) {
+func (s weighted) Sample(logits []float64) (int, error) {
 	logitsCopy := make([]float64, 0, len(logits))
 	indices := make([]int, 0, len(logits))
-	// the uv sampler does not support NaN values
 	for i, logit := range logits {
 		if !math.IsInf(logit, -1) {
 			logitsCopy = append(logitsCopy, logit)
