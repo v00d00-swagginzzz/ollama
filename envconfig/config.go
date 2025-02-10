@@ -166,7 +166,7 @@ var (
 	// MultiUserCache optimizes prompt caching for multi-user scenarios
 	MultiUserCache = Bool("OLLAMA_MULTIUSER_CACHE")
 	// ContextLength sets the maximum context length
-	ContextLength = Uint("OLLAMA_CONTEXT_LENGTH", 0)
+	ContextLength = Uint("OLLAMA_CONTEXT_LENGTH", 2048)
 )
 
 func String(s string) func() string {

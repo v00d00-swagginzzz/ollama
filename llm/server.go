@@ -132,11 +132,6 @@ func NewLlamaServer(gpus discover.GpuInfoList, model string, ggml *GGML, adapter
 
 	estimate.log()
 
-	defaultCtxSize := api.DefaultOptions().NumCtx
-	if envconfig.ContextLength() > 0 && opts.NumCtx != defaultCtxSize {
-		opts.NumCtx = int(envconfig.ContextLength())
-	}
-
 	params := []string{
 		"--model", model,
 		"--ctx-size", strconv.Itoa(opts.NumCtx),
