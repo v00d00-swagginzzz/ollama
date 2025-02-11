@@ -6,6 +6,7 @@ import (
 	"math"
 	"slices"
 
+	pq "github.com/emirpasic/gods/v2/queues/priorityqueue"
 	"golang.org/x/exp/rand"
 	"gonum.org/v1/gonum/floats"
 	"gonum.org/v1/gonum/stat/sampleuv"
@@ -53,6 +54,15 @@ func (t Temperature) Apply(logits []float64) ([]float64, error) {
 	return logits, nil
 }
 
+type logitMap struct {
+	index int
+	logit float64
+}
+
+func logitMapComparator(a, b logitMap) int {
+	return -cmp.Compare(a.logit, b.logit)
+}
+
 type TopK int
 
 // TODO(parthsareen): avoid having to check all logits after this transform
@@ -64,18 +74,21 @@ func (k TopK) Apply(logits []float64) ([]float64, error) {
 		return logits, nil
 	}
 
-	indices := make([]int, len(logits))
-	for i := range indices {
-		indices[i] = i
+	q := pq.NewWith(logitMapComparator)
+	for i, logit := range logits {
+		q.Enqueue(logitMap{index: i, logit: logit})
 	}
 
-	// sort in descending order
-	slices.SortFunc(indices, func(i, j int) int {
-		return cmp.Compare(logits[j], logits[i])
-	})
+	validLogits := make(map[int]float64)
+	for range k {
+		logitMap, _ := q.Dequeue()
+		validLogits[logitMap.index] = logitMap.logit
+	}
 
-	for _, idx := range indices[k:] {
-		logits[idx] = math.Inf(-1)
+	for i := range logits {
+		if _, ok := validLogits[i]; !ok {
+			logits[i] = math.Inf(-1)
+		}
 	}
 
 	return logits, nil

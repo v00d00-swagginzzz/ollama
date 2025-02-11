@@ -145,20 +145,25 @@ func TestSample(t *testing.T) {
 		callOrder: &callOrder,
 	}
 
-	got, err := Weighted(nil).Sample(input, mock1, mock2, mock3)
+	got, err := Greedy().Sample(input, mock1, mock2, mock3)
 	if err != nil {
 		t.Error(err)
 		return
 	}
 
-	wantOrder := []int{1, 2, 3}
-	if diff := cmp.Diff(wantOrder, callOrder); diff != "" {
-		t.Errorf("call order mismatch (-want +got):\n%s", diff)
-	}
-
 	want := 3 // Greedy sampler should pick highest logit
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("sampled index mismatch (-want +got):\n%s", diff)
+	}
+
+	_, err = Weighted(nil).Sample(input, mock1, mock2, mock3)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	wantOrder := []int{1, 2, 3}
+	if diff := cmp.Diff(wantOrder, callOrder); diff != "" {
+		t.Errorf("call order mismatch (-want +got):\n%s", diff)
 	}
 
 	errMock := &testTransform{
