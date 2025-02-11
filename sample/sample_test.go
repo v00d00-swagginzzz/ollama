@@ -3,6 +3,7 @@ package sample
 import (
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -189,4 +190,53 @@ func (ts *testTransform) Apply(logits []float64) ([]float64, error) {
 		return nil, ts.returnErr
 	}
 	return logits, nil
+}
+
+func BenchmarkTransform(b *testing.B) {
+	transforms := map[string]Transform{
+		"Temperature": Temperature(0.5),
+		"TopK":        TopK(10),
+		"TopP":        TopP(0.9),
+		"MinP":        MinP(0.2),
+	}
+
+	logits := make([]float64, 1<<16)
+	for i := range logits {
+		logits[i] = rand.Float64()
+	}
+
+	for name, transform := range transforms {
+		b.Run(name, func(b *testing.B) {
+			b.ResetTimer()
+			for range b.N {
+				_, err := transform.Apply(logits)
+				if err != nil {
+					b.Error(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkSample(b *testing.B) {
+	samplers := map[string]Sampler{
+		"Greedy":   Greedy(),
+		"Weighted": Weighted(nil),
+	}
+
+	logits := make([]float32, 1<<16)
+	for i := range logits {
+		logits[i] = rand.Float32()
+	}
+
+	for name, s := range samplers {
+		b.Run(name, func(b *testing.B) {
+			b.ResetTimer()
+			for range b.N {
+				if _, err := s.Sample(logits); err != nil {
+					b.Error(err)
+				}
+			}
+		})
+	}
 }
