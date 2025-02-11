@@ -16,19 +16,7 @@ type Transform interface {
 }
 
 type Sampler interface {
-	Sample([]float64) (int, error)
-}
-
-type SamplerChain struct {
-	transforms []Transform
-	sampler    Sampler
-}
-
-func NewSampler(transforms []Transform, sampler Sampler) *SamplerChain {
-	return &SamplerChain{
-		transforms: transforms,
-		sampler:    sampler,
-	}
+	Sample([]float32, ...Transform) (int, error)
 }
 
 // TODO(parthsareen): potentially cache softmax values
@@ -48,6 +36,9 @@ func softmax(logits []float64) []float64 {
 type Temperature float64
 
 func (t Temperature) Apply(logits []float64) ([]float64, error) {
+	if t == 0 {
+		return nil, errors.New("use Greedy sampler instead of Temperature(0)")
+	}
 	if t < 0 || t > 2 {
 		return nil, errors.New("temperature must be between 0 and 2")
 	}
@@ -152,10 +143,23 @@ func Weighted(seed *int64) Sampler {
 	return weighted{src: src}
 }
 
-func (s weighted) Sample(logits []float64) (int, error) {
+func (s weighted) Sample(logits []float32, transforms ...Transform) (int, error) {
+	logits64 := make([]float64, len(logits))
+	for i, v := range logits {
+		logits64[i] = float64(v)
+	}
+
+	var err error
+	for _, t := range transforms {
+		logits64, err = t.Apply(logits64)
+		if err != nil {
+			return -1, err
+		}
+	}
+
 	logitsCopy := make([]float64, 0, len(logits))
 	indices := make([]int, 0, len(logits))
-	for i, logit := range logits {
+	for i, logit := range logits64 {
 		if !math.IsInf(logit, -1) {
 			logitsCopy = append(logitsCopy, logit)
 			indices = append(indices, i)
@@ -172,25 +176,4 @@ func (s weighted) Sample(logits []float64) (int, error) {
 		return indices[idx], nil
 	}
 	return -1, errors.New("weighed sampler failed, no valid token found")
-}
-
-func (s *SamplerChain) Sample(input []float32) (int, error) {
-	logits := make([]float64, len(input))
-	for i, v := range input {
-		logits[i] = float64(v)
-	}
-
-	var err error
-	for _, t := range s.transforms {
-		if t == Temperature(0) {
-			s.sampler = Greedy()
-		} else {
-			logits, err = t.Apply(logits)
-			if err != nil {
-				return -1, err
-			}
-		}
-	}
-
-	return s.sampler.Sample(logits)
 }

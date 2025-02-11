@@ -23,6 +23,10 @@ func TestTemperature(t *testing.T) {
 	if err == nil {
 		t.Errorf("expected error for temperature=-1, got %v", logits)
 	}
+	logits, err = Temperature(0).Apply([]float64{-3, -2, -1, 0, 1, 2, 4})
+	if err == nil {
+		t.Errorf("expected error for temperature=0, got %v", logits)
+	}
 	logits, err = Temperature(2.1).Apply([]float64{-3, -2, -1, 0, 1, 2, 4})
 	if err == nil {
 		t.Errorf("expected error for temperature=2.1, got %v", logits)
@@ -108,7 +112,7 @@ func TestMinP(t *testing.T) {
 }
 
 func TestWeighed(t *testing.T) {
-	idx, err := Weighted(nil).Sample([]float64{math.Inf(-1), 2, math.Inf(-1), math.Inf(-1)})
+	idx, err := Weighted(nil).Sample([]float32{float32(math.Inf(-1)), 2, float32(math.Inf(-1)), float32(math.Inf(-1))})
 	if err != nil {
 		t.Error(err)
 		return
@@ -118,7 +122,7 @@ func TestWeighed(t *testing.T) {
 		t.Errorf("index mismatch (-want +got):\n%s", diff)
 	}
 
-	idx, err = Weighted(nil).Sample([]float64{math.Inf(-1), math.Inf(-1), math.Inf(-1)})
+	idx, err = Weighted(nil).Sample([]float32{float32(math.Inf(-1)), float32(math.Inf(-1)), float32(math.Inf(-1))})
 	if err == nil {
 		t.Error("expected error for no valid tokens, got index", idx)
 	}
@@ -140,9 +144,8 @@ func TestSample(t *testing.T) {
 		id:        3,
 		callOrder: &callOrder,
 	}
-	sampler := NewSampler([]Transform{mock1, mock2, mock3}, Greedy())
 
-	got, err := sampler.Sample(input)
+	got, err := Weighted(nil).Sample(input, mock1, mock2, mock3)
 	if err != nil {
 		t.Error(err)
 		return
@@ -161,8 +164,7 @@ func TestSample(t *testing.T) {
 	errMock := &testTransform{
 		returnErr: fmt.Errorf("mock error"),
 	}
-	sampler = NewSampler([]Transform{mock1, errMock, mock2}, Greedy())
-	_, err = sampler.Sample(input)
+	_, err = Weighted(nil).Sample(input, mock1, errMock, mock2)
 	if err == nil {
 		t.Error("Expected error from sampler")
 	}
@@ -182,17 +184,4 @@ func (ts *testTransform) Apply(logits []float64) ([]float64, error) {
 		return nil, ts.returnErr
 	}
 	return logits, nil
-}
-
-func TestSampleTemperatureZero(t *testing.T) {
-	sampler := NewSampler([]Transform{Temperature(0)}, Weighted(nil))
-	got, err := sampler.Sample([]float32{1, 2, 3, 4})
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	want := 3 // Greedy sampler should pick highest logit index
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("sampled index mismatch (-want +got):\n%s", diff)
-	}
 }
