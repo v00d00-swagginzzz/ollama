@@ -22,16 +22,14 @@ type Sampler interface {
 
 // TODO(parthsareen): potentially cache softmax values
 func softmax(logits []float64) []float64 {
-	copiedLogits := make([]float64, len(logits))
-	copy(copiedLogits, logits)
-	for i := range copiedLogits {
-		copiedLogits[i] = math.Exp(copiedLogits[i])
+	var sum float64
+	tt := make([]float64, len(logits))
+	for i, v := range logits {
+		tt[i] = math.Exp(v)
+		sum += tt[i]
 	}
-
-	floatSum := floats.Sum(copiedLogits)
-	floats.Scale(1.0/floatSum, copiedLogits)
-
-	return copiedLogits
+	floats.Scale(1/sum, tt)
+	return tt
 }
 
 type Temperature float64
