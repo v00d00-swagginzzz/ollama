@@ -156,13 +156,18 @@ func TestSample(t *testing.T) {
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("sampled index mismatch (-want +got):\n%s", diff)
 	}
+	wantOrder := []int{1, 2, 3}
+	if diff := cmp.Diff(wantOrder, callOrder); diff != "" {
+		t.Errorf("call order mismatch (-want +got):\n%s", diff)
+	}
+	callOrder = nil
 
 	_, err = Weighted(nil).Sample(input, mock1, mock2, mock3)
 	if err != nil {
 		t.Error(err)
 		return
 	}
-	wantOrder := []int{1, 2, 3}
+	wantOrder = []int{1, 2, 3}
 	if diff := cmp.Diff(wantOrder, callOrder); diff != "" {
 		t.Errorf("call order mismatch (-want +got):\n%s", diff)
 	}
